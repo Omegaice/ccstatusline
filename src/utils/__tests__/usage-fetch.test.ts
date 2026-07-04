@@ -324,6 +324,41 @@ describe('fetchUsageData error handling', () => {
             disabled_reason: null
         }
     });
+    const fableLimitsResponseBody = JSON.stringify({
+        five_hour: {
+            utilization: 15,
+            resets_at: '2030-01-01T00:00:00.000Z'
+        },
+        seven_day: {
+            utilization: 21,
+            resets_at: '2030-01-07T00:00:00.000Z'
+        },
+        seven_day_sonnet: null,
+        seven_day_opus: null,
+        limits: [
+            { kind: 'weekly_all', group: 'weekly', percent: 21, resets_at: '2030-01-07T00:00:00.000Z', scope: null },
+            {
+                kind: 'weekly_scoped',
+                group: 'weekly',
+                percent: 15,
+                resets_at: '2030-01-07T07:59:59.000Z',
+                scope: { model: { id: null, display_name: 'Fable' } }
+            }
+        ]
+    });
+    const noFableLimitsResponseBody = JSON.stringify({
+        five_hour: {
+            utilization: 15,
+            resets_at: '2030-01-01T00:00:00.000Z'
+        },
+        seven_day: {
+            utilization: 21,
+            resets_at: '2030-01-07T00:00:00.000Z'
+        },
+        limits: [
+            { kind: 'weekly_all', group: 'weekly', percent: 21, resets_at: '2030-01-07T00:00:00.000Z', scope: null }
+        ]
+    });
     const extraUsageResponseBody = JSON.stringify({
         five_hour: {
             utilization: 42,
@@ -606,6 +641,67 @@ describe('fetchUsageData error handling', () => {
                 weeklySonnetUsage: 0,
                 weeklyOpusUsage: 0,
                 extraUsageEnabled: false
+            });
+            expect(result.second).toEqual(result.first);
+            expect(result.requestCount).toBe(1);
+        } finally {
+            harness.cleanup();
+        }
+    });
+
+    it('parses the weekly Fable limit from the limits array', () => {
+        const harness = createProbeHarness();
+
+        try {
+            const home = harness.createTokenHome('fable-limit');
+            const result = harness.runProbe({
+                claudeConfigDir: home.claudeConfig,
+                home: home.home,
+                mode: 'success',
+                nowMs,
+                pathDir: home.bin,
+                requiredFields: ['weeklyFableUsage'],
+                responseBody: fableLimitsResponseBody
+            });
+
+            expect(result.first).toEqual({
+                sessionUsage: 15,
+                sessionResetAt: '2030-01-01T00:00:00.000Z',
+                weeklyUsage: 21,
+                weeklyResetAt: '2030-01-07T00:00:00.000Z',
+                weeklySonnetUsage: 0,
+                weeklyOpusUsage: 0,
+                weeklyFableUsage: 15,
+                weeklyFableResetAt: '2030-01-07T07:59:59.000Z'
+            });
+            expect(result.second).toEqual(result.first);
+            expect(result.requestCount).toBe(1);
+        } finally {
+            harness.cleanup();
+        }
+    });
+
+    it('treats a limits array without a Fable scope as zero Fable usage', () => {
+        const harness = createProbeHarness();
+
+        try {
+            const home = harness.createTokenHome('no-fable-limit');
+            const result = harness.runProbe({
+                claudeConfigDir: home.claudeConfig,
+                home: home.home,
+                mode: 'success',
+                nowMs,
+                pathDir: home.bin,
+                requiredFields: ['weeklyFableUsage'],
+                responseBody: noFableLimitsResponseBody
+            });
+
+            expect(result.first).toEqual({
+                sessionUsage: 15,
+                sessionResetAt: '2030-01-01T00:00:00.000Z',
+                weeklyUsage: 21,
+                weeklyResetAt: '2030-01-07T00:00:00.000Z',
+                weeklyFableUsage: 0
             });
             expect(result.second).toEqual(result.first);
             expect(result.requestCount).toBe(1);

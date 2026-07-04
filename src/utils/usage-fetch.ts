@@ -42,7 +42,8 @@ const WINDOW_RESET_FIELD_SENTINELS: Partial<Record<UsageDataField, UsageDataFiel
     sessionResetAt: 'sessionUsage',
     weeklyResetAt: 'weeklyUsage',
     weeklySonnetResetAt: 'weeklySonnetUsage',
-    weeklyOpusResetAt: 'weeklyOpusUsage'
+    weeklyOpusResetAt: 'weeklyOpusUsage',
+    weeklyFableResetAt: 'weeklyFableUsage'
 };
 
 const UsageCredentialsSchema = z.object({ claudeAiOauth: z.object({ accessToken: z.string().nullable().optional() }).optional() });
@@ -61,6 +62,8 @@ const CachedUsageDataSchema = z.object({
     weeklySonnetResetAt: z.string().nullable().optional(),
     weeklyOpusUsage: z.number().nullable().optional(),
     weeklyOpusResetAt: z.string().nullable().optional(),
+    weeklyFableUsage: z.number().nullable().optional(),
+    weeklyFableResetAt: z.string().nullable().optional(),
     extraUsageEnabled: z.boolean().nullable().optional(),
     extraUsageLimit: z.number().nullable().optional(),
     extraUsageUsed: z.number().nullable().optional(),
@@ -78,11 +81,30 @@ const UsageApiBucketSchema = z.looseObject({
 
 type UsageApiBucket = z.infer<typeof UsageApiBucketSchema>;
 
+// Per-model weekly limits are reported in the `limits` array (kind
+// 'weekly_scoped') rather than a dedicated seven_day_<model> bucket. Fable in
+// particular has no top-level bucket, so its window is only recoverable here.
+const UsageApiLimitSchema = z.looseObject({
+    kind: z.string().nullable().optional(),
+    group: z.string().nullable().optional(),
+    percent: z.number().nullable().optional(),
+    resets_at: z.string().nullable().optional(),
+    scope: z.looseObject({
+        model: z.looseObject({
+            id: z.string().nullable().optional(),
+            display_name: z.string().nullable().optional()
+        }).nullable().optional()
+    }).nullable().optional()
+});
+
+type UsageApiLimit = z.infer<typeof UsageApiLimitSchema>;
+
 const UsageApiResponseSchema = z.looseObject({
     five_hour: UsageApiBucketSchema,
     seven_day: UsageApiBucketSchema,
     seven_day_sonnet: UsageApiBucketSchema,
     seven_day_opus: UsageApiBucketSchema,
+    limits: z.array(UsageApiLimitSchema).nullable().optional(),
     extra_usage: z.looseObject({
         is_enabled: z.boolean().nullable().optional(),
         monthly_limit: z.number().nullable().optional(),
@@ -94,6 +116,35 @@ const UsageApiResponseSchema = z.looseObject({
 
 function getUsageApiBucketUtilization(bucket: UsageApiBucket): number | undefined {
     return bucket === null ? 0 : bucket?.utilization ?? undefined;
+}
+
+// Resolves a model's weekly limit from the `limits` array. When the array is
+// present but the model is unscoped, the utilization is a conclusive 0 (mirroring
+// a null seven_day_<model> bucket) so the fetch gate is satisfied and callers do
+// not refetch on every render. Absent the array entirely, the field stays
+// undefined so the widget renders nothing rather than a misleading 0%.
+function parseWeeklyModelLimit(
+    limits: (UsageApiLimit | null)[] | null | undefined,
+    displayName: string
+): { usage?: number; resetAt?: string } {
+    if (!limits) {
+        return {};
+    }
+
+    const target = displayName.toLowerCase();
+    const match = limits.find((limit) => {
+        const isWeekly = limit?.group === 'weekly' || (limit?.kind?.startsWith('weekly') ?? false);
+        return isWeekly && limit?.scope?.model?.display_name?.toLowerCase() === target;
+    });
+
+    if (!match) {
+        return { usage: 0 };
+    }
+
+    return {
+        usage: match.percent ?? 0,
+        resetAt: match.resets_at ?? undefined
+    };
 }
 
 function parseJsonWithSchema<T>(rawJson: string, schema: z.ZodType<T>): T | null {
@@ -127,6 +178,8 @@ function parseCachedUsageData(rawJson: string): UsageData | null {
         weeklySonnetResetAt: parsed.weeklySonnetResetAt ?? undefined,
         weeklyOpusUsage: parsed.weeklyOpusUsage ?? undefined,
         weeklyOpusResetAt: parsed.weeklyOpusResetAt ?? undefined,
+        weeklyFableUsage: parsed.weeklyFableUsage ?? undefined,
+        weeklyFableResetAt: parsed.weeklyFableResetAt ?? undefined,
         extraUsageEnabled: parsed.extraUsageEnabled ?? undefined,
         extraUsageLimit: parsed.extraUsageLimit ?? undefined,
         extraUsageUsed: parsed.extraUsageUsed ?? undefined,
@@ -163,6 +216,8 @@ function parseUsageApiResponse(rawJson: string): UsageData | null {
         return null;
     }
 
+    const fableLimit = parseWeeklyModelLimit(parsed.limits, 'Fable');
+
     return {
         sessionUsage: getUsageApiBucketUtilization(parsed.five_hour),
         sessionResetAt: parsed.five_hour?.resets_at ?? undefined,
@@ -172,6 +227,8 @@ function parseUsageApiResponse(rawJson: string): UsageData | null {
         weeklySonnetResetAt: parsed.seven_day_sonnet?.resets_at ?? undefined,
         weeklyOpusUsage: getUsageApiBucketUtilization(parsed.seven_day_opus),
         weeklyOpusResetAt: parsed.seven_day_opus?.resets_at ?? undefined,
+        weeklyFableUsage: fableLimit.usage,
+        weeklyFableResetAt: fableLimit.resetAt,
         extraUsageEnabled: parsed.extra_usage?.is_enabled ?? undefined,
         extraUsageLimit: parsed.extra_usage?.monthly_limit ?? undefined,
         extraUsageUsed: parsed.extra_usage?.used_credits ?? undefined,
